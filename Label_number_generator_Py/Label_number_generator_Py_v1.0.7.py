@@ -34,6 +34,7 @@ class QRGeneratorApp(QWidget):
         self.plt_box_start = QLineEdit()
         self.plt_box_end = QLineEdit()
         self.boxes_per_pallet = QLineEdit()
+        self.plt_start_code = QLineEdit()
 
         export_xlsx_button = QPushButton("匯出為 Excel (.xlsx)")
         export_xlsx_button.clicked.connect(self.export_to_xlsx)
@@ -57,6 +58,8 @@ class QRGeneratorApp(QWidget):
         self.form_layout.addWidget(self.plt_box_end)
         self.form_layout.addWidget(QLabel("每棧板箱數："))
         self.form_layout.addWidget(self.boxes_per_pallet)
+        self.form_layout.addWidget(QLabel("棧板起始編號："))
+        self.form_layout.addWidget(self.plt_start_code)
 
         layout.addLayout(self.form_layout)
         layout.addWidget(export_xlsx_button)
@@ -69,6 +72,7 @@ class QRGeneratorApp(QWidget):
         self.update_mode_ui()
 
     def update_mode_ui(self):
+        """根據所選模式顯示對應欄位"""
         is_box = self.mode_box.isChecked()
         for i in range(self.form_layout.count()):
             widget = self.form_layout.itemAt(i).widget()
@@ -81,14 +85,18 @@ class QRGeneratorApp(QWidget):
             if isinstance(widget, QLineEdit):
                 if widget in [self.sn_start, self.sn_end, self.sn_per_box, self.box_code]:
                     widget.setVisible(is_box)
-                elif widget in [self.plt_box_start, self.plt_box_end, self.boxes_per_pallet]:
+                elif widget in [self.plt_box_start, self.plt_box_end, self.boxes_per_pallet, self.plt_start_code]:
                     widget.setVisible(not is_box)
 
     def generate_data(self):
+        """根據模式產生資料表格"""
         if self.mode_box.isChecked():
             sn_start = int(self.sn_start.text())
             sn_end = int(self.sn_end.text())
-            sn_per_box = int(self.sn_per_box.text())
+            sn_per_box = self.sn_per_box.text()
+            if not sn_per_box.isdigit():
+                raise ValueError("每箱序號數量必須是數字。")
+            sn_per_box = int(sn_per_box)
             box_format = self.box_code.text()
             match = re.search(r'(.*?)(\d+)$', box_format)
             if not match:
@@ -97,6 +105,7 @@ class QRGeneratorApp(QWidget):
             numeric_part = match.group(2)
             box_no_numeric = int(numeric_part)
             numeric_len = len(numeric_part)
+
             all_data = []
             while sn_start <= sn_end:
                 row_data = {}
@@ -114,29 +123,51 @@ class QRGeneratorApp(QWidget):
                 all_data.append(row_data)
                 sn_start += sn_per_box
                 box_no_numeric += 1
+
             df = pd.DataFrame(all_data)
             df = df.fillna("")
             return df
         else:
-            box_start = int(self.plt_box_start.text())
-            box_end = int(self.plt_box_end.text())
-            boxes_per_pallet = int(self.boxes_per_pallet.text())
-            numeric_len = max(len(self.plt_box_start.text()), len(self.plt_box_end.text()))
-            all_data = []
+            box_start_code = self.plt_box_start.text()
+            box_end_code = self.plt_box_end.text()
+            boxes_per_pallet = self.boxes_per_pallet.text()
+            if not boxes_per_pallet.isdigit():
+                raise ValueError("每棧板箱數必須是數字。")
+            boxes_per_pallet = int(boxes_per_pallet)
+
+            pallet_start_code = self.plt_start_code.text().strip()
+            if not re.match(r'^[A-Za-z]*\d+$', pallet_start_code):
+                raise ValueError("棧板起始編號格式錯誤，需為英文+數字組合，例如 P001。")
+            m_pallet = re.match(r'([A-Za-z]*)(\d+)', pallet_start_code)
+            pallet_prefix = m_pallet.group(1)
+            pallet_no = int(m_pallet.group(2))
+            pallet_num_len = len(m_pallet.group(2))
+
+            def parse_code(code):
+                m = re.match(r'([A-Za-z]*)(\d+)', code)
+                if not m:
+                    raise ValueError(f"無法解析箱號格式：{code}")
+                return m.group(1), int(m.group(2)), len(m.group(2))
+
+            prefix, box_start, num_len = parse_code(box_start_code)
+            _, box_end, _ = parse_code(box_end_code)
+
             current_box = box_start
-            pallet_no = 1
+            all_data = []
             while current_box <= box_end:
                 row_data = {}
-                row_data["PalletCode"] = f"PLT NO.:{str(pallet_no).zfill(3)}"
+                row_data["PalletCode"] = f"PLT NO.:{pallet_prefix}{str(pallet_no).zfill(pallet_num_len)}"
                 qr_lines = []
-                for i in range(boxes_per_pallet):
+                for _ in range(boxes_per_pallet):
                     if current_box > box_end:
                         break
-                    qr_lines.append(f"C/NO.{str(current_box).zfill(3)}")
+                    box_code = f"C/NO.{prefix}{str(current_box).zfill(num_len)}"
+                    qr_lines.append(box_code)
                     current_box += 1
                 row_data["QRCodeContent"] = "\n".join(qr_lines)
                 all_data.append(row_data)
                 pallet_no += 1
+
             df = pd.DataFrame(all_data)
             return df
 

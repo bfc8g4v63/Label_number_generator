@@ -49,4 +49,4 @@
 - EXCEL>檔案>選項>信任中心>巨集設定>啟用VBA巨集
 - EXCEL>檔案>選項>信任中心>信任位置>新增位置(指定信讓的路徑文件夾[父層以下])
 - 如開啟來自網路磁碟(SMB)，則需開啟EXCEL>檔案>選項>信任中心>信任的文件>允許信任特定網路上的文件，再不行則下載Tool網頁中的
-- allow_macro_from_internet.reg.reg>雙擊開啟解鎖 (如無法請使用 以系統管理員執行)。[在Tool 倉庫中的allow_macro_from_internet.reg](https://github.com/bfc8g4v63/Tool/releases)
+- [allow_macro_from_internet.reg](https://github.com/bfc8g4v63/Tool/releases/download/v1.0.5/allow_macro_from_internet.reg)>下載並雙擊開啟解鎖(如無法請使用 以系統管理員執行)。

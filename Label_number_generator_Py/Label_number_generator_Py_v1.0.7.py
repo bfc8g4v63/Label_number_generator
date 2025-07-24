@@ -128,48 +128,49 @@ class QRGeneratorApp(QWidget):
             df = df.fillna("")
             return df
         else:
-            box_start_code = self.plt_box_start.text()
-            box_end_code = self.plt_box_end.text()
-            boxes_per_pallet = self.boxes_per_pallet.text()
-            if not boxes_per_pallet.isdigit():
-                raise ValueError("每棧板箱數必須是數字。")
-            boxes_per_pallet = int(boxes_per_pallet)
+                    box_start_code = self.plt_box_start.text()
+                    box_end_code = self.plt_box_end.text()
+                    boxes_per_pallet = self.boxes_per_pallet.text()
+                    if not boxes_per_pallet.isdigit():
+                        raise ValueError("每棧板箱數必須是數字。")
+                    boxes_per_pallet = int(boxes_per_pallet)
 
-            pallet_start_code = self.plt_start_code.text().strip()
-            if not re.match(r'^[A-Za-z]*\d+$', pallet_start_code):
-                raise ValueError("棧板起始編號格式錯誤，需為英文+數字組合，例如 P001。")
-            m_pallet = re.match(r'([A-Za-z]*)(\d+)', pallet_start_code)
-            pallet_prefix = m_pallet.group(1)
-            pallet_no = int(m_pallet.group(2))
-            pallet_num_len = len(m_pallet.group(2))
+                    pallet_start_code = self.plt_start_code.text().strip()
+                    if not re.search(r'(.*?)(\d+)$', pallet_start_code):
+                        raise ValueError("棧板起始編號格式錯誤，需以數字結尾，例如 P001、FTG02、X9。")
+                    m_pallet = re.search(r'(.*?)(\d+)$', pallet_start_code)
+                    pallet_prefix = m_pallet.group(1)
+                    pallet_no = int(m_pallet.group(2))
+                    pallet_num_len = len(m_pallet.group(2))
 
-            def parse_code(code):
-                m = re.match(r'([A-Za-z]*)(\d+)', code)
-                if not m:
-                    raise ValueError(f"無法解析箱號格式：{code}")
-                return m.group(1), int(m.group(2)), len(m.group(2))
+                    def parse_code(code):
 
-            prefix, box_start, num_len = parse_code(box_start_code)
-            _, box_end, _ = parse_code(box_end_code)
+                        m = re.search(r'(.*?)(\d+)$', code)
+                        if not m:
+                            raise ValueError(f"無法解析箱號格式：{code}")
+                        return m.group(1), int(m.group(2)), len(m.group(2))
 
-            current_box = box_start
-            all_data = []
-            while current_box <= box_end:
-                row_data = {}
-                row_data["PalletCode"] = f"PLT NO.:{pallet_prefix}{str(pallet_no).zfill(pallet_num_len)}"
-                qr_lines = []
-                for _ in range(boxes_per_pallet):
-                    if current_box > box_end:
-                        break
-                    box_code = f"C/NO.{prefix}{str(current_box).zfill(num_len)}"
-                    qr_lines.append(box_code)
-                    current_box += 1
-                row_data["QRCodeContent"] = "\n".join(qr_lines)
-                all_data.append(row_data)
-                pallet_no += 1
+                    prefix, box_start, num_len = parse_code(box_start_code)
+                    _, box_end, _ = parse_code(box_end_code)
 
-            df = pd.DataFrame(all_data)
-            return df
+                    current_box = box_start
+                    all_data = []
+                    while current_box <= box_end:
+                        row_data = {}
+                        row_data["PalletCode"] = f"PLT NO.:{pallet_prefix}{str(pallet_no).zfill(pallet_num_len)}"
+                        qr_lines = []
+                        for _ in range(boxes_per_pallet):
+                            if current_box > box_end:
+                                break
+                            box_code = f"C/NO.{prefix}{str(current_box).zfill(num_len)}"
+                            qr_lines.append(box_code)
+                            current_box += 1
+                        row_data["QRCodeContent"] = "\n".join(qr_lines)
+                        all_data.append(row_data)
+                        pallet_no += 1
+
+                    df = pd.DataFrame(all_data)
+                    return df
 
     def export_to_xlsx(self):
         try:

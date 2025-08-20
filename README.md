@@ -1,4 +1,4 @@
-【Label number generator_Py v1.0.7】
+【Label number generator_Py v1.0.9】
 
 執行方式：
 1. Label_number_generator_Py.exe (應用程式)

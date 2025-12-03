@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QRadioButton,
     QGroupBox,
+    QMenu,
 )
 from PyQt6.QtCore import Qt
 
@@ -37,12 +38,18 @@ class QRGeneratorApp(QWidget):
 
         self.mode_box = QRadioButton("外箱")
         self.mode_pallet = QRadioButton("棧板")
+        self.mode_import = QRadioButton("匯入重排")
+
         self.mode_box.setChecked(True)
+
         self.mode_box.toggled.connect(self.update_mode_ui)
         self.mode_pallet.toggled.connect(self.update_mode_ui)
+        self.mode_import.toggled.connect(self.update_mode_ui)
+
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(self.mode_box)
         mode_layout.addWidget(self.mode_pallet)
+        mode_layout.addWidget(self.mode_import)
         mode_layout.addStretch()
         main_layout.addLayout(mode_layout)
 
@@ -140,49 +147,60 @@ class QRGeneratorApp(QWidget):
         self.table = QTableWidget()
         main_layout.addWidget(self.table)
 
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
+
         self.setLayout(main_layout)
         self.update_mode_ui()
 
     @staticmethod
     def _parse_tail(code: str):
-        m = re.match(r"^(.*?)(\d+)(\D*)$", code.strip())
-        if not m:
-            raise ValueError(
-                f"格式錯誤：{code}（需在中間有連續數字作為流水號，例如 R5209-2508003 20250819 10578010 00000001 SC）"
-            )
-        return m.group(1), int(m.group(2)), len(m.group(2)), m.group(3)
+        text = code.strip()
+        m = re.match(r"^(.*?)(\d+)(\D*)$", text)
+        if m:
+            return m.group(1), int(m.group(2)), len(m.group(2)), m.group(3)
+        if text.isdigit():
+            return "", int(text), len(text), ""
+        raise ValueError(
+            "格式錯誤："
+            + code
+            + "（需包含連續數字作為流水號，例如 191254173930 或 R5209-2508003 20250819 10578010 00000001 SC/缺少箱號格式）"
+        )
 
     def update_mode_ui(self):
         is_box = self.mode_box.isChecked()
-        labels_to_show_box = [
-            "起始序號：",
-            "結束序號：",
-            "每箱序號數量：",
-            "箱號格式：",
-        ]
-        labels_to_show_pallet = [
-            "箱號起始編號：",
-            "箱號結束編號：",
-            "每棧板箱數：",
-            "棧板起始編號：",
-        ]
+        is_pallet = self.mode_pallet.isChecked()
+        is_import = self.mode_import.isChecked()
 
         for group in self.findChildren(QGroupBox):
-            if group.title() == "參數設定":
-                layout = group.layout()
-                for i in range(layout.count()):
-                    widget = layout.itemAt(i).widget()
-                    if isinstance(widget, QLabel):
-                        text = widget.text()
-                        if text in labels_to_show_box:
-                            widget.setVisible(is_box)
-                        elif text in labels_to_show_pallet:
-                            widget.setVisible(not is_box)
-                    if isinstance(widget, QLineEdit):
-                        if widget in [self.sn_start, self.sn_end, self.sn_per_box, self.box_code]:
-                            widget.setVisible(is_box)
-                        elif widget in [self.plt_box_start, self.plt_box_end, self.boxes_per_pallet, self.plt_start_code]:
-                            widget.setVisible(not is_box)
+            if group.title() != "參數設定":
+                continue
+
+            layout = group.layout()
+            for i in range(layout.count()):
+                widget = layout.itemAt(i).widget()
+
+                if isinstance(widget, QLabel):
+                    text = widget.text()
+
+                    if text in ["起始序號：", "結束序號："]:
+                        widget.setVisible(is_box)
+
+                    elif text in ["每箱序號數量：", "箱號格式："]:
+                        widget.setVisible(is_box or is_import)
+
+                    elif text in ["箱號起始編號：", "箱號結束編號：", "每棧板箱數：", "棧板起始編號："]:
+                        widget.setVisible(is_pallet)
+
+                elif isinstance(widget, QLineEdit):
+                    if widget in [self.sn_start, self.sn_end]:
+                        widget.setVisible(is_box)
+
+                    elif widget in [self.sn_per_box, self.box_code]:
+                        widget.setVisible(is_box or is_import)
+
+                    elif widget in [self.plt_box_start, self.plt_box_end, self.boxes_per_pallet, self.plt_start_code]:
+                        widget.setVisible(is_pallet)
 
     def generate_data(self):
         if self.mode_box.isChecked():
@@ -207,13 +225,13 @@ class QRGeneratorApp(QWidget):
             all_data = []
             while current <= last:
                 row = {}
-                row["BoxNo"] = f"C/NO.{box_prefix}{str(box_no).zfill(box_len)}{box_suffix}"
+                row["BoxNo"] = "C/NO." + box_prefix + str(box_no).zfill(box_len) + box_suffix
                 qr_lines = []
                 for i in range(sn_per_box):
                     if current > last:
                         break
-                    serial = f"{s_prefix}{str(current).zfill(s_len)}{s_suffix}"
-                    row[f"Serial{i + 1}"] = serial
+                    serial = s_prefix + str(current).zfill(s_len) + s_suffix
+                    row["Serial" + str(i + 1)] = serial
                     qr_lines.append(serial)
                     current += 1
                 row["QRCodeContent"] = "\n".join(qr_lines)
@@ -242,12 +260,12 @@ class QRGeneratorApp(QWidget):
         all_data = []
         while current_box <= b_end:
             row = {}
-            row["PalletCode"] = f"PLT NO.:{p_prefix}{str(p_no).zfill(p_len)}{p_suffix}"
+            row["PalletCode"] = "PLT NO.:" + p_prefix + str(p_no).zfill(p_len) + p_suffix
             qr_lines = []
             for _ in range(boxes_per_pallet):
                 if current_box > b_end:
                     break
-                code_text = f"{b_prefix}{str(current_box).zfill(b_len)}{b_suffix}"
+                code_text = b_prefix + str(current_box).zfill(b_len) + b_suffix
                 qr_lines.append(code_text)
                 current_box += 1
             row["QRCodeContent"] = "\n".join(qr_lines)
@@ -265,13 +283,32 @@ class QRGeneratorApp(QWidget):
             df = pd.read_csv(file_path)
         else:
             raise ValueError("只支援 xls、xlsx、csv 檔案。")
-        if df.shape[1] < 3:
-            raise ValueError("匯入檔案至少需要三欄，例如：棧板號、箱號、客戶SN。")
+
+        if df.shape[1] < 2:
+            raise ValueError("匯入檔案至少需要兩欄，例如：箱號、客戶SN。")
+
         return df
 
     def _rebox_serials_from_dataframe(self, src_df: pd.DataFrame, sn_per_box: int) -> pd.DataFrame:
-        sn_series = src_df.iloc[:, 2].astype(str)
-        serials = [s for s in sn_series if s.strip()]
+        if src_df.shape[1] >= 3:
+            box_series = src_df.iloc[:, 1]
+            sn_series = src_df.iloc[:, 2]
+        else:
+            box_series = src_df.iloc[:, 0]
+            sn_series = src_df.iloc[:, 1]
+
+        serials = []
+        for v in sn_series:
+            if pd.isna(v):
+                continue
+            text = str(v).strip()
+            if not text:
+                continue
+            m = re.match(r"^(\d+)\.0$", text)
+            if m:
+                text = m.group(1)
+            serials.append(text)
+
         if not serials:
             raise ValueError("檔案中找不到任何客戶SN。")
 
@@ -279,20 +316,35 @@ class QRGeneratorApp(QWidget):
         if box_code_text:
             b_prefix, b_no, b_len, b_suffix = self._parse_tail(box_code_text)
         else:
-            first_box = str(src_df.iloc[0, 1])
-            b_prefix, b_no, b_len, b_suffix = self._parse_tail(first_box)
+            found = False
+            for v in box_series:
+                if pd.isna(v):
+                    continue
+                text = str(v).strip()
+                if not text:
+                    continue
+                try:
+                    b_prefix, b_no, b_len, b_suffix = self._parse_tail(text)
+                    found = True
+                    break
+                except ValueError:
+                    continue
+
+            if not found:
+                raise ValueError("箱號欄位無法解析任何有效格式。")
 
         all_data = []
         idx = 0
-        while idx < len(serials):
+        total = len(serials)
+        while idx < total:
             row = {}
-            row["BoxNo"] = f"C/NO.{b_prefix}{str(b_no).zfill(b_len)}{b_suffix}"
+            row["BoxNo"] = "C/NO." + b_prefix + str(b_no).zfill(b_len) + b_suffix
             qr_lines = []
             for i in range(sn_per_box):
-                if idx >= len(serials):
+                if idx >= total:
                     break
                 serial = serials[idx]
-                row[f"Serial{i + 1}"] = serial
+                row["Serial" + str(i + 1)] = serial
                 qr_lines.append(serial)
                 idx += 1
             row["QRCodeContent"] = "\n".join(qr_lines)
@@ -304,6 +356,9 @@ class QRGeneratorApp(QWidget):
 
     def import_from_file(self, file_path: str | None = None):
         try:
+            if not self.mode_import.isChecked():
+                raise ValueError("請先切換到「匯入重排」模式再匯入檔案。")
+
             if file_path is None:
                 file_path, _ = QFileDialog.getOpenFileName(
                     self,
@@ -331,15 +386,14 @@ class QRGeneratorApp(QWidget):
             QMessageBox.information(
                 self,
                 "完成",
-                f"匯入並重排完成，共 {len(df)} 箱。",
+                "匯入並重排完成，共 " + str(len(df)) + " 箱。",
             )
         except Exception as e:
             QMessageBox.critical(
                 self,
                 "錯誤",
                 "請將 xls / xlsx / csv 檔案拖曳至下方白色表格（白框）處，"
-                "或使用「匯入檔案並重排」按鈕選擇檔案。\n\n詳細錯誤資訊："
-                + str(e)
+                "或使用「匯入檔案並重排」按鈕選擇檔案。\n\n詳細錯誤資訊：" + str(e)
             )
 
     def dragEnterEvent(self, event):
@@ -378,75 +432,147 @@ class QRGeneratorApp(QWidget):
             return
 
         df = self.current_df
-        target_col_name = None
+
+        container_col_name = None
         if "BoxNo" in df.columns:
-            target_col_name = "BoxNo"
+            container_col_name = "BoxNo"
         elif "PalletCode" in df.columns:
-            target_col_name = "PalletCode"
+            container_col_name = "PalletCode"
 
         found_row_index = None
 
         for idx in range(len(df)):
             row = df.iloc[idx]
             for col_name in df.columns:
-                if col_name == target_col_name:
+                if col_name == container_col_name:
                     continue
-                if str(row[col_name]) == serial:
+                cell_value = str(row[col_name]).strip()
+                if cell_value == serial:
                     found_row_index = idx
                     break
             if found_row_index is not None:
                 break
 
         if found_row_index is None:
-            self.scan_result_label.setText(f"序號{serial}\n未在任何箱中找到")
+            self.scan_result_label.setText(f"序號 {serial} 未在任何箱中找到")
         else:
-            row_number = found_row_index + 1
-            if target_col_name == "PalletCode":
-                self.scan_result_label.setText(f"序號{serial}\n第{row_number}棧板")
-            else:
-                self.scan_result_label.setText(f"序號{serial}\n第{row_number}箱")
+            box_text = df.iloc[found_row_index][container_col_name]
+            box_text = str(box_text).strip()
+
+            result_text = f"序號 {serial} 為第 {box_text} 箱"
+
+            self.scan_result_label.setText(result_text)
 
         if self.scan_mode_continuous.isChecked():
             self.scan_input.setFocus()
             self.scan_input.selectAll()
 
+    def show_table_context_menu(self, pos):
+        if self.table.rowCount() == 0:
+            return
+
+        selected_indexes = self.table.selectedIndexes()
+        if not selected_indexes:
+            return
+
+        rows = sorted({index.row() for index in selected_indexes})
+        if not rows:
+            return
+
+        global_pos = self.table.viewport().mapToGlobal(pos)
+        menu = QMenu(self)
+        action_delete = menu.addAction("刪除選取列")
+        chosen_action = menu.exec(global_pos)
+        if chosen_action == action_delete:
+            self.delete_selected_rows(rows)
+
+    def delete_selected_rows(self, rows):
+        if not rows:
+            return
+
+        if self.current_df is None or self.current_df.empty:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "刪除確認",
+            "確定要刪除選取的 " + str(len(rows)) + " 列嗎？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        total_len = len(self.current_df)
+        keep_indices = [i for i in range(total_len) if i not in rows]
+        if keep_indices:
+            self.current_df = self.current_df.iloc[keep_indices].reset_index(drop=True)
+        else:
+            self.current_df = pd.DataFrame(columns=self.current_df.columns)
+
+        self.populate_table(self.current_df)
+
     def export_to_xlsx(self):
         try:
-            df = self.generate_data()
+            if self.mode_import.isChecked():
+                if self.current_df is None or self.current_df.empty:
+                    raise ValueError("請先使用「匯入檔案並重排」產生資料。")
+                df = self.current_df
+            else:
+                df = self.generate_data()
+
             save_path, _ = QFileDialog.getSaveFileName(self, "另存為 Excel 檔", "", "Excel Files (*.xlsx)")
             if save_path:
                 if not save_path.endswith(".xlsx"):
                     save_path += ".xlsx"
                 df.to_excel(save_path, index=False)
                 self.populate_table(df)
-                QMessageBox.information(self, "完成", f"Excel 匯出成功\n{save_path}")
+                QMessageBox.information(self, "完成", "Excel 匯出成功\n" + save_path)
         except Exception as e:
             QMessageBox.critical(self, "錯誤", str(e))
 
     def export_to_csv(self):
         try:
-            df = self.generate_data()
+            if self.mode_import.isChecked():
+                if self.current_df is None or self.current_df.empty:
+                    raise ValueError("請先使用「匯入檔案並重排」產生資料。")
+                df = self.current_df
+            else:
+                df = self.generate_data()
+
             save_path, _ = QFileDialog.getSaveFileName(self, "另存為 CSV 檔", "", "CSV Files (*.csv)")
             if save_path:
                 if not save_path.endswith(".csv"):
                     save_path += ".csv"
                 df.to_csv(save_path, index=False, encoding="utf-8-sig")
                 self.populate_table(df)
-                QMessageBox.information(self, "完成", f"CSV 匯出成功\n{save_path}")
+                QMessageBox.information(self, "完成", "CSV 匯出成功\n" + save_path)
         except Exception as e:
             QMessageBox.critical(self, "錯誤", str(e))
 
     def export_to_xls(self):
         try:
-            df = self.generate_data()
+            if self.mode_import.isChecked():
+                if self.current_df is None or self.current_df.empty:
+                    raise ValueError("請先使用「匯入檔案並重排」產生資料。")
+                df = self.current_df
+            else:
+                df = self.generate_data()
 
             max_rows, max_cols = 65536, 256
             if len(df) > max_rows or len(df.columns) > max_cols:
                 QMessageBox.warning(
                     self,
                     "超出 .xls 限制",
-                    f".xls 最多 {max_rows} 列、{max_cols} 欄。\n"
-                    f"目前 {len(df)} 列、{len(df.columns)} 欄。\n請改用 .xlsx 匯出。",
+                    ".xls 最多 "
+                    + str(max_rows)
+                    + " 列、"
+                    + str(max_cols)
+                    + " 欄。\n目前 "
+                    + str(len(df))
+                    + " 列、"
+                    + str(len(df.columns))
+                    + " 欄。\n請改用 .xlsx 匯出。",
                 )
                 return
 
@@ -476,9 +602,8 @@ class QRGeneratorApp(QWidget):
                     ws.write(r + 1, c, "" if pd.isna(val) else str(val))
 
             wb.save(save_path)
-
             self.populate_table(df)
-            QMessageBox.information(self, "完成", f"Excel 97-2003 匯出成功\n{save_path}")
+            QMessageBox.information(self, "完成", "Excel 97-2003 匯出成功\n" + save_path)
 
         except Exception as e:
             QMessageBox.critical(self, "錯誤", str(e))

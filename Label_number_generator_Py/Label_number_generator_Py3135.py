@@ -28,8 +28,10 @@ class QRGeneratorApp(QWidget):
         self.setWindowTitle("Label number generator")
         self.setGeometry(300, 200, 900, 600)
         self.setWindowIcon(QIcon("Nelson.ico"))
+        self.setAcceptDrops(True)
 
         self.current_df = None
+        self.import_source_df = None
 
         main_layout = QVBoxLayout()
 
@@ -118,6 +120,9 @@ class QRGeneratorApp(QWidget):
         top_layout.addWidget(scan_group)
         main_layout.addLayout(top_layout)
 
+        import_button = QPushButton("匯入檔案並重排")
+        import_button.clicked.connect(lambda: self.import_from_file())
+
         export_xlsx_button = QPushButton("匯出為 Excel (.xlsx)")
         export_xlsx_button.clicked.connect(self.export_to_xlsx)
 
@@ -127,6 +132,7 @@ class QRGeneratorApp(QWidget):
         export_xls_button = QPushButton("匯出為 Excel 97-2003 (.xls)")
         export_xls_button.clicked.connect(self.export_to_xls)
 
+        main_layout.addWidget(import_button)
         main_layout.addWidget(export_xlsx_button)
         main_layout.addWidget(export_csv_button)
         main_layout.addWidget(export_xls_button)
@@ -136,6 +142,15 @@ class QRGeneratorApp(QWidget):
 
         self.setLayout(main_layout)
         self.update_mode_ui()
+
+    @staticmethod
+    def _parse_tail(code: str):
+        m = re.match(r"^(.*?)(\d+)(\D*)$", code.strip())
+        if not m:
+            raise ValueError(
+                f"格式錯誤：{code}（需在中間有連續數字作為流水號，例如 R5209-2508003 20250819 10578010 00000001 SC）"
+            )
+        return m.group(1), int(m.group(2)), len(m.group(2)), m.group(3)
 
     def update_mode_ui(self):
         is_box = self.mode_box.isChecked()
@@ -170,12 +185,6 @@ class QRGeneratorApp(QWidget):
                             widget.setVisible(not is_box)
 
     def generate_data(self):
-        def parse_tail(code: str):
-            m = re.match(r"^(.*?)(\d+)(\D*)$", code.strip())
-            if not m:
-                raise ValueError(f"格式錯誤：{code}（需在中間有連續數字作為流水號，例如 R5209-2508003 20250819 10578010 00000001 SC）")
-            return m.group(1), int(m.group(2)), len(m.group(2)), m.group(3)
-
         if self.mode_box.isChecked():
             sn_start_raw = self.sn_start.text().strip()
             sn_end_raw = self.sn_end.text().strip()
@@ -184,13 +193,13 @@ class QRGeneratorApp(QWidget):
                 raise ValueError("每箱序號數量必須是數字。")
             sn_per_box = int(sn_per_box)
 
-            s_prefix, s_no, s_len, s_suffix = parse_tail(sn_start_raw)
-            e_prefix, e_no, _, e_suffix = parse_tail(sn_end_raw)
+            s_prefix, s_no, s_len, s_suffix = self._parse_tail(sn_start_raw)
+            e_prefix, e_no, _, e_suffix = self._parse_tail(sn_end_raw)
             if s_prefix != e_prefix or s_suffix != e_suffix:
                 raise ValueError("起始與結束序號的前綴與尾碼必須相同。")
 
             box_format = self.box_code.text().strip()
-            box_prefix, box_no, box_len, box_suffix = parse_tail(box_format)
+            box_prefix, box_no, box_len, box_suffix = self._parse_tail(box_format)
 
             current = s_no
             last = e_no
@@ -222,10 +231,10 @@ class QRGeneratorApp(QWidget):
         boxes_per_pallet = int(boxes_per_pallet)
 
         pallet_start_code = self.plt_start_code.text().strip()
-        p_prefix, p_no, p_len, p_suffix = parse_tail(pallet_start_code)
+        p_prefix, p_no, p_len, p_suffix = self._parse_tail(pallet_start_code)
 
-        b_prefix, b_start, b_len, b_suffix = parse_tail(box_start_code)
-        e_prefix, b_end, _, e_suffix = parse_tail(box_end_code)
+        b_prefix, b_start, b_len, b_suffix = self._parse_tail(box_start_code)
+        e_prefix, b_end, _, e_suffix = self._parse_tail(box_end_code)
         if b_prefix != e_prefix or b_suffix != e_suffix:
             raise ValueError("箱號起訖的前綴與尾碼必須相同。")
 
@@ -247,6 +256,110 @@ class QRGeneratorApp(QWidget):
         df = pd.DataFrame(all_data)
         self.current_df = df
         return df
+
+    def _read_source_dataframe(self, file_path: str) -> pd.DataFrame:
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in (".xlsx", ".xls"):
+            df = pd.read_excel(file_path)
+        elif ext == ".csv":
+            df = pd.read_csv(file_path)
+        else:
+            raise ValueError("只支援 xls、xlsx、csv 檔案。")
+        if df.shape[1] < 3:
+            raise ValueError("匯入檔案至少需要三欄，例如：棧板號、箱號、客戶SN。")
+        return df
+
+    def _rebox_serials_from_dataframe(self, src_df: pd.DataFrame, sn_per_box: int) -> pd.DataFrame:
+        sn_series = src_df.iloc[:, 2].astype(str)
+        serials = [s for s in sn_series if s.strip()]
+        if not serials:
+            raise ValueError("檔案中找不到任何客戶SN。")
+
+        box_code_text = self.box_code.text().strip()
+        if box_code_text:
+            b_prefix, b_no, b_len, b_suffix = self._parse_tail(box_code_text)
+        else:
+            first_box = str(src_df.iloc[0, 1])
+            b_prefix, b_no, b_len, b_suffix = self._parse_tail(first_box)
+
+        all_data = []
+        idx = 0
+        while idx < len(serials):
+            row = {}
+            row["BoxNo"] = f"C/NO.{b_prefix}{str(b_no).zfill(b_len)}{b_suffix}"
+            qr_lines = []
+            for i in range(sn_per_box):
+                if idx >= len(serials):
+                    break
+                serial = serials[idx]
+                row[f"Serial{i + 1}"] = serial
+                qr_lines.append(serial)
+                idx += 1
+            row["QRCodeContent"] = "\n".join(qr_lines)
+            all_data.append(row)
+            b_no += 1
+
+        df = pd.DataFrame(all_data).fillna("")
+        return df
+
+    def import_from_file(self, file_path: str | None = None):
+        try:
+            if file_path is None:
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "選擇要匯入的檔案",
+                    "",
+                    "Excel/CSV Files (*.xlsx *.xls *.csv)",
+                )
+                if not file_path:
+                    return
+
+            sn_per_box_text = self.sn_per_box.text().strip()
+            if not sn_per_box_text.isdigit():
+                raise ValueError("請先在「每箱序號數量」輸入要重排的每箱數量（必須是數字）。")
+            sn_per_box = int(sn_per_box_text)
+            if sn_per_box <= 0:
+                raise ValueError("每箱序號數量必須大於 0。")
+
+            src_df = self._read_source_dataframe(file_path)
+            self.import_source_df = src_df.copy()
+
+            df = self._rebox_serials_from_dataframe(src_df, sn_per_box)
+            self.current_df = df
+            self.populate_table(df)
+
+            QMessageBox.information(
+                self,
+                "完成",
+                f"匯入並重排完成，共 {len(df)} 箱。",
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "錯誤",
+                "請將 xls / xlsx / csv 檔案拖曳至下方白色表格（白框）處，"
+                "或使用「匯入檔案並重排」按鈕選擇檔案。\n\n詳細錯誤資訊："
+                + str(e)
+            )
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                path = urls[0].toLocalFile()
+                ext = os.path.splitext(path)[1].lower()
+                if ext in (".xlsx", ".xls", ".csv"):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        file_path = urls[0].toLocalFile()
+        if file_path:
+            self.import_from_file(file_path)
 
     def lookup_serial(self):
         serial = self.scan_input.text().strip()

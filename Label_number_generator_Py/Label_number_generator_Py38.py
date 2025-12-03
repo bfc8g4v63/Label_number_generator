@@ -1,9 +1,11 @@
 import sys
 import os
 import re
+from typing import Optional
 
 import pandas as pd
 from PyQt6.QtGui import QIcon
+
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget,
@@ -38,7 +40,7 @@ class QRGeneratorApp(QWidget):
 
         self.mode_box = QRadioButton("外箱")
         self.mode_pallet = QRadioButton("棧板")
-        self.mode_import = QRadioButton("匯入重排")
+        self.mode_import = QRadioButton("匯入")
 
         self.mode_box.setChecked(True)
 
@@ -63,6 +65,9 @@ class QRGeneratorApp(QWidget):
         self.boxes_per_pallet = QLineEdit()
         self.plt_start_code = QLineEdit()
 
+        self.plt_filter_code = QLineEdit()
+        self.sheet_index_input = QLineEdit()
+
         for w in [
             self.sn_start,
             self.sn_end,
@@ -72,7 +77,10 @@ class QRGeneratorApp(QWidget):
             self.plt_box_end,
             self.boxes_per_pallet,
             self.plt_start_code,
+            self.plt_filter_code,
+            self.sheet_index_input,
         ]:
+
             w.setMaximumWidth(260)
 
         left_form_layout = QVBoxLayout()
@@ -93,6 +101,12 @@ class QRGeneratorApp(QWidget):
         left_form_layout.addWidget(self.boxes_per_pallet)
         left_form_layout.addWidget(QLabel("棧板起始編號："))
         left_form_layout.addWidget(self.plt_start_code)
+
+        left_form_layout.addWidget(QLabel("指定棧板號："))
+        left_form_layout.addWidget(self.plt_filter_code)
+
+        left_form_layout.addWidget(QLabel("工作表編號(1=第一頁)："))
+        left_form_layout.addWidget(self.sheet_index_input)
 
         left_form_group = QGroupBox("參數設定")
         left_form_group.setLayout(left_form_layout)
@@ -192,6 +206,12 @@ class QRGeneratorApp(QWidget):
                     elif text in ["箱號起始編號：", "箱號結束編號：", "每棧板箱數：", "棧板起始編號："]:
                         widget.setVisible(is_pallet)
 
+                    elif text == "指定棧板號：":
+                        widget.setVisible(is_import)
+
+                    elif text.startswith("工作表編號"):
+                        widget.setVisible(is_import)
+
                 elif isinstance(widget, QLineEdit):
                     if widget in [self.sn_start, self.sn_end]:
                         widget.setVisible(is_box)
@@ -201,6 +221,12 @@ class QRGeneratorApp(QWidget):
 
                     elif widget in [self.plt_box_start, self.plt_box_end, self.boxes_per_pallet, self.plt_start_code]:
                         widget.setVisible(is_pallet)
+
+                    elif widget is self.plt_filter_code:
+                        widget.setVisible(is_import)
+
+                    elif widget is self.sheet_index_input:
+                        widget.setVisible(is_import)
 
     def generate_data(self):
         if self.mode_box.isChecked():
@@ -217,6 +243,8 @@ class QRGeneratorApp(QWidget):
                 raise ValueError("起始與結束序號的前綴與尾碼必須相同。")
 
             box_format = self.box_code.text().strip()
+            if not box_format:
+                raise ValueError("箱號格式不得為空，請輸入例如 TCUJGRFBJ0001。")
             box_prefix, box_no, box_len, box_suffix = self._parse_tail(box_format)
 
             current = s_no
@@ -275,12 +303,29 @@ class QRGeneratorApp(QWidget):
         self.current_df = df
         return df
 
-    def _read_source_dataframe(self, file_path: str) -> pd.DataFrame:
+    def _read_source_dataframe(self, file_path: str, sheet_index: Optional[int] = None) -> pd.DataFrame:
         ext = os.path.splitext(file_path)[1].lower()
-        if ext in (".xlsx", ".xls"):
-            df = pd.read_excel(file_path)
+
+        if ext in [".xlsx", ".xls"]:
+            if sheet_index is None or sheet_index <= 0:
+                raise ValueError("請在「工作表編號」輸入要讀取的工作表，例如 1 或 2。")
+            sheet_arg = sheet_index - 1
+
+            if ext == ".xlsx":
+                df = pd.read_excel(file_path, engine="openpyxl", sheet_name=sheet_arg)
+            else:
+                try:
+                    import xlrd
+                except ImportError:
+                    raise RuntimeError(
+                        "目前未安裝 xlrd==1.2.0，無法匯入 .xls\n"
+                        "請執行：pip install xlrd==1.2.0"
+                    )
+                df = pd.read_excel(file_path, engine="xlrd", sheet_name=sheet_arg)
+
         elif ext == ".csv":
             df = pd.read_csv(file_path)
+
         else:
             raise ValueError("只支援 xls、xlsx、csv 檔案。")
 
@@ -289,13 +334,31 @@ class QRGeneratorApp(QWidget):
 
         return df
 
-    def _rebox_serials_from_dataframe(self, src_df: pd.DataFrame, sn_per_box: int) -> pd.DataFrame:
-        if src_df.shape[1] >= 3:
-            box_series = src_df.iloc[:, 1]
-            sn_series = src_df.iloc[:, 2]
-        else:
-            box_series = src_df.iloc[:, 0]
-            sn_series = src_df.iloc[:, 1]
+    def _rebox_serials_from_dataframe(
+        self,
+        src_df: pd.DataFrame,
+        sn_per_box: int,
+        pallet_filter: Optional[str] = None,
+    ) -> pd.DataFrame:
+        working_df = src_df.copy()
+
+        if working_df.shape[1] >= 3:
+            pallet_series = working_df.iloc[:, 0]
+            if pallet_filter:
+                target = pallet_filter.replace("\u00a0", "").strip()
+                cleaned_series = (
+                    pallet_series.astype(str)
+                    .str.replace("\u00a0", "", regex=False)
+                    .str.strip()
+                )
+                mask = cleaned_series == target
+                if not mask.any():
+                    mask = cleaned_series.str.contains(re.escape(target), case=False, na=False)
+                working_df = working_df.loc[mask].reset_index(drop=True)
+                if working_df.empty:
+                    raise ValueError("指定棧板號 " + pallet_filter + " 在匯入檔中找不到任何資料。")
+
+            sn_series = working_df.iloc[:, 2]
 
         serials = []
         for v in sn_series:
@@ -313,25 +376,9 @@ class QRGeneratorApp(QWidget):
             raise ValueError("檔案中找不到任何客戶SN。")
 
         box_code_text = self.box_code.text().strip()
-        if box_code_text:
-            b_prefix, b_no, b_len, b_suffix = self._parse_tail(box_code_text)
-        else:
-            found = False
-            for v in box_series:
-                if pd.isna(v):
-                    continue
-                text = str(v).strip()
-                if not text:
-                    continue
-                try:
-                    b_prefix, b_no, b_len, b_suffix = self._parse_tail(text)
-                    found = True
-                    break
-                except ValueError:
-                    continue
-
-            if not found:
-                raise ValueError("箱號欄位無法解析任何有效格式。")
+        if not box_code_text:
+            raise ValueError("匯入時「箱號格式」不得為空，請輸入例如 TCUJGRFBJ0001。")
+        b_prefix, b_no, b_len, b_suffix = self._parse_tail(box_code_text)
 
         all_data = []
         idx = 0
@@ -354,10 +401,10 @@ class QRGeneratorApp(QWidget):
         df = pd.DataFrame(all_data).fillna("")
         return df
 
-    def import_from_file(self, file_path: str | None = None):
+    def import_from_file(self, file_path: Optional[str] = None):
         try:
             if not self.mode_import.isChecked():
-                raise ValueError("請先切換到「匯入重排」模式再匯入檔案。")
+                raise ValueError("請先切換到「匯入」模式再匯入檔案。")
 
             if file_path is None:
                 file_path, _ = QFileDialog.getOpenFileName(
@@ -376,10 +423,22 @@ class QRGeneratorApp(QWidget):
             if sn_per_box <= 0:
                 raise ValueError("每箱序號數量必須大於 0。")
 
-            src_df = self._read_source_dataframe(file_path)
+            sheet_text = self.sheet_index_input.text().strip()
+            if not sheet_text.isdigit():
+                raise ValueError("請在「工作表編號」輸入要讀取的工作表，例如 1 或 2。")
+            sheet_index = int(sheet_text)
+            if sheet_index <= 0:
+                raise ValueError("工作表編號必須是大於 0 的整數。")
+
+            pallet_filter = self.plt_filter_code.text().strip()
+            if not pallet_filter:
+                pallet_filter = None
+
+            src_df = self._read_source_dataframe(file_path, sheet_index=sheet_index)
             self.import_source_df = src_df.copy()
 
-            df = self._rebox_serials_from_dataframe(src_df, sn_per_box)
+            df = self._rebox_serials_from_dataframe(src_df, sn_per_box, pallet_filter=pallet_filter)
+
             self.current_df = df
             self.populate_table(df)
 
@@ -454,12 +513,12 @@ class QRGeneratorApp(QWidget):
                 break
 
         if found_row_index is None:
-            self.scan_result_label.setText(f"序號 {serial} 未在任何箱中找到")
+            self.scan_result_label.setText("序號 " + serial + " 未在任何箱中找到")
         else:
             box_text = df.iloc[found_row_index][container_col_name]
             box_text = str(box_text).strip()
 
-            result_text = f"序號 {serial} 為第 {box_text} 箱"
+            result_text = "序號 " + serial + " 為第 " + box_text + " 箱"
 
             self.scan_result_label.setText(result_text)
 

@@ -59,6 +59,11 @@ class QRGeneratorApp(QWidget):
         self.sn_end = QLineEdit()
         self.sn_per_box = QLineEdit()
         self.box_code = QLineEdit()
+        self.box_code.textChanged.connect(
+            lambda: self.box_code.setText(
+                self.box_code.text().replace(" ", "").replace("\u00a0", "").strip()
+            )
+        )
 
         self.plt_box_start = QLineEdit()
         self.plt_box_end = QLineEdit()
@@ -66,6 +71,11 @@ class QRGeneratorApp(QWidget):
         self.plt_start_code = QLineEdit()
 
         self.plt_filter_code = QLineEdit()
+        self.plt_filter_code.textChanged.connect(
+            lambda: self.plt_filter_code.setText(
+                re.sub(r"\s+", "", self.plt_filter_code.text())
+            )
+        )
         self.sheet_index_input = QLineEdit()
 
         for w in [
@@ -345,12 +355,13 @@ class QRGeneratorApp(QWidget):
         if working_df.shape[1] >= 3:
             pallet_series = working_df.iloc[:, 0]
             if pallet_filter:
-                target = pallet_filter.replace("\u00a0", "").strip()
+                target = re.sub(r"\s+", "", pallet_filter)
+
                 cleaned_series = (
                     pallet_series.astype(str)
-                    .str.replace("\u00a0", "", regex=False)
-                    .str.strip()
+                    .str.replace(r"\s+", "", regex=True)
                 )
+
                 mask = cleaned_series == target
                 if not mask.any():
                     mask = cleaned_series.str.contains(re.escape(target), case=False, na=False)
@@ -627,10 +638,6 @@ class QRGeneratorApp(QWidget):
                     + str(max_rows)
                     + " 列、"
                     + str(max_cols)
-                    + " 欄。\n目前 "
-                    + str(len(df))
-                    + " 列、"
-                    + str(len(df.columns))
                     + " 欄。\n請改用 .xlsx 匯出。",
                 )
                 return
@@ -643,11 +650,12 @@ class QRGeneratorApp(QWidget):
             if not save_path.endswith(".xls"):
                 save_path += ".xls"
 
-            try:
-                import xlwt
-            except ImportError:
-                QMessageBox.critical(self, "缺少套件", "匯出 .xls 需要安裝 xlwt\n請執行 pip install xlwt")
-                return
+            import xlwt
+            import win32com.client as win32
+            import tempfile
+            import shutil
+
+            temp_path = save_path + "_temp.xls"
 
             wb = xlwt.Workbook()
             ws = wb.add_sheet("Sheet1")
@@ -660,7 +668,23 @@ class QRGeneratorApp(QWidget):
                     val = df.iat[r, c]
                     ws.write(r + 1, c, "" if pd.isna(val) else str(val))
 
-            wb.save(save_path)
+            wb.save(temp_path)
+
+            excel = win32.gencache.EnsureDispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+
+            safe_tmp = os.path.join(tempfile.gettempdir(), "export_temp_xls.xls")
+
+            wb_excel = excel.Workbooks.Open(temp_path)
+            wb_excel.SaveAs(safe_tmp, FileFormat=56)
+            wb_excel.Close()
+            excel.Quit()
+
+            shutil.copy2(safe_tmp, save_path)
+
+            os.remove(temp_path)
+
             self.populate_table(df)
             QMessageBox.information(self, "完成", "Excel 97-2003 匯出成功\n" + save_path)
 
@@ -674,7 +698,6 @@ class QRGeneratorApp(QWidget):
         for row in range(len(df)):
             for col in range(len(df.columns)):
                 self.table.setItem(row, col, QTableWidgetItem(str(df.iat[row, col])))
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
